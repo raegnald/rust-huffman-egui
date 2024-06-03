@@ -21,20 +21,46 @@ fn main() -> Result<(), eframe::Error> {
         )
 }
 
+struct SizeComparison {
+    original: usize,
+    compressed: usize
+}
+
 struct Application {
-    status: String
+    status: String,
+    size_comparison: Option<SizeComparison>
 }
 
 impl Default for Application {
     fn default() -> Self {
         Self {
-            status: "Compress or decompress a Huffman encoded file".to_owned()
+            status: "Compress or decompress a Huffman encoded file".to_owned(),
+            size_comparison: None
+        }
+    }
+}
+
+fn compress_with_filepath(app: &mut Application, filepath: String) {
+    app.status = format!("Compressing {}", filepath);
+
+    match Huffman::from_file(&filepath) {
+        Ok((huffman, text_size)) => {
+            let compressed = huffman.compress();
+            let (serialised_filepath, compressed_size) = compressed.serialise(filepath).unwrap();
+            app.status = format!("Saved compressed file to {}", serialised_filepath);
+            app.size_comparison = Some (SizeComparison {
+                original: text_size,
+                compressed: compressed_size
+            });
+        },
+        Err(err) => {
+            app.status = err;
         }
     }
 }
 
 impl eframe::App for Application {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(mut self: &mut Self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(&mut self.status);
 
@@ -45,16 +71,12 @@ impl eframe::App for Application {
                 match filepath {
                     None => (),
                     Some(filepath) => {
-                        self.status = format!("Compressing {}", filepath);
-                        let huffman = Huffman::from_file(&filepath)
-                            .expect("A valid file to create a Huffman-compressed file");
-                        let compressed = huffman.compress();
-                        let serialised_filepath = compressed.serialise(filepath).unwrap();
-                        self.status = format!("Saved compressed file to {}", serialised_filepath);
+                        compress_with_filepath(&mut self, filepath)
                     }
                 }
             }
         });
         return;
     }
+
 }

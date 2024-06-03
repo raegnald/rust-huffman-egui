@@ -1,10 +1,10 @@
 
-use std::collections::{BinaryHeap, HashMap};
+use std::{collections::{BinaryHeap, HashMap}, io::{BufWriter, Write}};
 
 use serde::{Serialize, Deserialize};
 use postcard;
 
-#[derive(Eq, PartialEq, PartialOrd, Ord,
+#[derive(Eq, PartialEq, PartialOrd,
          Clone, Debug,
          Serialize, Deserialize)]
 enum HuffmanTree {
@@ -15,12 +15,13 @@ enum HuffmanTree {
 #[derive(Serialize, Deserialize)]
 pub struct SerialisedHuffmanTree {
     tree: HuffmanTree,
+    senses_count: usize,
     encoded_chars: Vec<u8>
 }
 
 type Frequencies = [usize; 256];
 
-#[derive(Eq, PartialEq, PartialOrd, Debug)]
+#[derive(Eq, PartialEq, Debug)]
 pub struct HuffmanFreqTree {
     frequencies: Frequencies,
     tree: HuffmanTree
@@ -46,7 +47,7 @@ impl HuffmanTree {
          match self {
             HuffmanTree::Leaf(c) => {
                 let n = *c as usize;
-                frequencies[n] * n
+                frequencies[n]
             },
             HuffmanTree::Node((s, t)) =>
                 s.weight(frequencies) + t.weight(frequencies)
@@ -59,28 +60,46 @@ impl HuffmanTree {
                 let _ = codewords.insert(*c, current_path);
             }
             HuffmanTree::Node((s, t)) => {
-                let mut left_dir = current_path.clone();
-                let mut right_dir = current_path.clone();
-                left_dir.push(Sense::Left);
-                right_dir.push(Sense::Right);
-                s.fill_codewords_with_acc(codewords, left_dir);
-                t.fill_codewords_with_acc(codewords, right_dir);
+                let mut left_path = current_path.clone();
+                let mut right_path = current_path.clone();
+                left_path.push(Sense::Left);
+                right_path.push(Sense::Right);
+                s.fill_codewords_with_acc(codewords, left_path);
+                t.fill_codewords_with_acc(codewords, right_path);
+            }
+        }
+    }
+
+    fn graphviz(self: &Self, buf: &mut BufWriter<std::fs::File>, frequencies: Frequencies, current_path: Path) {
+         match self {
+            HuffmanTree::Leaf(c) => {
+                writeln!(buf, "\"{:?}\" -> \"'{}' (weight {})\"", current_path, c.escape_default(), self.weight(frequencies)).unwrap();
+            }
+            HuffmanTree::Node((s, t)) => {
+                let mut left_path = current_path.clone();
+                let mut right_path = current_path.clone();
+                left_path.push(Sense::Left);
+                right_path.push(Sense::Right);
+                writeln!(buf, "\"{:?}\" -> \"{:?}\"", current_path, left_path).unwrap();
+                writeln!(buf, "\"{:?}\" -> \"{:?}\"", current_path, right_path).unwrap();
+                s.graphviz(buf, frequencies, left_path);
+                t.graphviz(buf, frequencies, right_path);
             }
         }
     }
 }
 
 impl SerialisedHuffmanTree {
-    pub fn serialise(self: &Self, filepath: String) -> Result<String, String> {
+    pub fn serialise(self: &Self, filepath: String) -> Result<(String, usize), String> {
         let serial = postcard::to_allocvec(&self)
             .expect("A valid serialisation");
-
+        let compressed_size = serial.len();
         let compressed_filepath = format!("{}.huff", filepath); // XXX: Is there a more beatiful way of doing this?
 
         std::fs::write(compressed_filepath.clone(), serial)
             .expect("Writing correctly to the compressed file");
 
-        Ok(compressed_filepath)
+        Ok((compressed_filepath, compressed_size))
     }
 }
 
@@ -94,18 +113,28 @@ impl HuffmanFreqTree {
     }
 }
 
-impl Ord for HuffmanFreqTree {
+impl PartialOrd for HuffmanFreqTree {
     // Custom comparison function for min-heap
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(other.weight().cmp(&self.weight()))
+    }
+}
+
+impl Ord for HuffmanFreqTree {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        use std::cmp::Ordering::*;
-        match self.tree.weight(self.frequencies).cmp(&other.tree.weight(other.frequencies)) {
-            Equal => if self.tree == other.tree { Equal } else { Greater },
-            x => x.reverse()    // to make min-heap
-        }
+        self.partial_cmp(&other).unwrap()
     }
 }
 
 impl Huffman {
+
+    pub fn graphviz(self: &Self, file: std::fs::File) {
+        let mut buf = BufWriter::new(file);
+        writeln!(buf, "digraph G {{").unwrap();
+        self.freq_tree.tree.graphviz(&mut buf, self.freq_tree.frequencies, Vec::new());
+        writeln!(buf, "}}").unwrap();
+        buf.flush().unwrap();
+    }
 
     fn text_to_flattened_paths(self: &Self, codewords: &Codewords) -> Vec<Sense> {
         let mut paths = Vec::new();
@@ -116,7 +145,7 @@ impl Huffman {
         return paths
     }
 
-    fn paths_to_encoded_chars(self: &Self, paths: &mut Vec<Sense>) -> Vec<u8> {
+    fn paths_to_encoded_chars(self: &Self, paths: &mut Vec<Sense>) -> (Vec<u8>, usize) {
         let mut encoded_chars = Vec::with_capacity(paths.len() / 8);
 
         let padding_count = 8 - paths.len() % 8;
@@ -124,21 +153,23 @@ impl Huffman {
             paths.push(Sense::Left);
         }
 
-        // Adding bit by bit each sense
-        let mut path_iter = paths.into_iter();
-        while let Some(sense) = path_iter.next() {
+        // Adding each sense bit by bit
+        let mut curr_path = 0;
+        while curr_path < paths.len() {
             let mut n: u8 = 0;
-            for d in (0..=7).rev() {
-                let b = match sense {
+            for offset in (0..=7).rev() {
+                let bit = match paths[curr_path] {
                     Sense::Left  => 0,
                     Sense::Right => 1
                 };
-                n |= b >> d;    // Add bit representing the sense to take
+                n |= bit << offset; // Add bit representing the sense to take
+                curr_path += 1;
             }
             encoded_chars.push(n);
         }
 
-        return encoded_chars
+        assert!(paths.len() == curr_path);
+        return (encoded_chars, curr_path)
     }
 
     pub fn compress(self: &Self) -> SerialisedHuffmanTree {
@@ -146,18 +177,21 @@ impl Huffman {
         self.freq_tree.fill_codewords(&mut codewords);
 
         let mut paths = self.text_to_flattened_paths(&codewords);
-        let encoded_chars = self.paths_to_encoded_chars(&mut paths);
+
+        let (encoded_chars, senses_count) = self.paths_to_encoded_chars(&mut paths);
 
         return SerialisedHuffmanTree {
             tree: self.freq_tree.tree.clone(),
+            senses_count,
             encoded_chars
         };
     }
 
-    pub fn from_file(filepath: &String) -> Result<Self, String> {
+    pub fn from_file(filepath: &String) -> Result<(Self, usize), String> {
         let text = std::fs::read_to_string(filepath).unwrap();
+        let text_len = text.len();
 
-        if text.len() == 0 {
+        if text_len == 0 {
             return Err("No content to compress".to_string())
         }
 
@@ -166,29 +200,37 @@ impl Huffman {
             frequencies[c as usize] += 1;
         }
 
-        let mut leaves: BinaryHeap<HuffmanTree> = BinaryHeap::new();
+        let mut leaves: BinaryHeap<HuffmanFreqTree> = BinaryHeap::new();
 
         for (i, freq) in frequencies.iter().enumerate() {
             if *freq > 0 {
                 let c = char::from_u32(i as u32).unwrap();
-                leaves.push(HuffmanTree::Leaf(c))
+                leaves.push(HuffmanFreqTree {
+                    frequencies,
+                    tree: HuffmanTree::Leaf(c)
+                })
             }
         }
 
         while leaves.len() > 1 {
-            let a = leaves.pop().unwrap();
-            let b = leaves.pop().unwrap();
-            let node = HuffmanTree::Node((Box::new(a), Box::new(b)));
+            let a = leaves.pop().unwrap().tree;
+            let b = leaves.pop().unwrap().tree;
+            let node = HuffmanFreqTree {
+                frequencies,
+                tree: HuffmanTree::Node((Box::new(a), Box::new(b)))
+            };
             leaves.push(node);
         }
 
-        return Ok(Huffman {
-            freq_tree: HuffmanFreqTree {
-                frequencies,
-                tree: leaves.pop().unwrap()
-            },
+        let huf = Huffman {
+            freq_tree: leaves.pop().unwrap(),
             text
-        })
+        };
+
+        // let graph_file = std::fs::File::create(format!("{}.dot", filepath)).unwrap();
+        // huf.graphviz(graph_file);
+
+        return Ok((huf, text_len))
 
     }
 }
