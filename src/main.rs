@@ -1,6 +1,8 @@
 
 mod huffman;
-use huffman::Huffman;
+use std::io::Write;
+
+use huffman::{Huffman, SerialisedHuffmanTree};
 
 use eframe::egui;
 use tinyfiledialogs;
@@ -59,6 +61,28 @@ fn compress_with_filepath(app: &mut Application, filepath: String) {
     }
 }
 
+fn decompress_with_filepath(app: &mut Application, filepath: String) {
+    app.status = format!("Decompressing {}", filepath);
+
+    let (deserialised, original_filepath) = SerialisedHuffmanTree::deserialise(filepath);
+
+    let original_text = Huffman::decompress(deserialised).unwrap();
+    let mut original_file = std::fs::File::create(original_filepath.clone()).unwrap();
+
+    original_file.write(original_text.as_bytes()).unwrap();
+
+    app.status = format!("Decompressed to {}", original_filepath)
+}
+
+fn handle_filepath(app: &mut Application, filepath: String) {
+    let extension = std::path::Path::new(&filepath).extension().unwrap();
+    if extension == huffman::COMPRESSED_FILE_EXTENSION {
+        decompress_with_filepath(app, filepath)
+    } else {
+        compress_with_filepath(app, filepath)
+    }
+}
+
 impl eframe::App for Application {
     fn update(mut self: &mut Self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -70,9 +94,7 @@ impl eframe::App for Application {
                 let filepath = tinyfiledialogs::open_file_dialog("File to compress", "", None);
                 match filepath {
                     None => (),
-                    Some(filepath) => {
-                        compress_with_filepath(&mut self, filepath)
-                    }
+                    Some(filepath) => handle_filepath(&mut self, filepath)
                 }
             }
         });

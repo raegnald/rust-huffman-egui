@@ -1,0 +1,7 @@
+
+* To do
+- [X] Simple GUI
+- [X] Compression
+- [X] Decompression
+- [ ] Non-blocking/threaded file picker
+- [ ] Compression ratio as a graphic
